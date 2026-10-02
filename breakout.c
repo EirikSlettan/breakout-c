@@ -15,8 +15,8 @@ unsigned int __attribute__((used)) black = 0x0;
 
 char *won = "You Won";       // DON'T TOUCH THIS - keep the string as is
 char *lost = "You Lost";     // DON'T TOUCH THIS - keep the string as is
-unsigned short height = 240; // DON'T TOUCH THIS - keep the value as is
-unsigned short width = 320;  // DON'T TOUCH THIS - keep the value as is
+unsigned short height = 320; // DON'T TOUCH THIS - keep the value as is
+unsigned short width = 240;  // DON'T TOUCH THIS - keep the value as is
 char font8x8[128][8];        // DON'T TOUCH THIS - this is a forward declaration
 unsigned char tiles[NROWS][NCOLS] __attribute__((used)) = { 0 }; // DON'T TOUCH THIS - this is the tile map
 /**************************************************************************************************/
@@ -33,7 +33,7 @@ unsigned char tiles[NROWS][NCOLS] __attribute__((used)) = { 0 }; // DON'T TOUCH 
 #define BAR_HEIGHT 45 
 #define BALL_RADIUS 3
 #define VGA_WIDTH 320
-#define VGA_HEIGHT 320
+#define VGA_HEIGHT 240
 #define BASE_VELOCITY 2
 #define FRAME_DELAY 20000
 
@@ -66,6 +66,9 @@ int vel_x;
 int vel_y;
 } Ball;
 
+unsigned int block_colors[] = {0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF};
+#define NUM_BLOCK_COLORS 5
+
 typedef struct bar{
     int pos_x;
     int pos_y;
@@ -74,6 +77,8 @@ typedef struct bar{
 Ball ball = {100, 100, BASE_VELOCITY, 0};
 Bar bar = {10, 100};
 Block blocks[NCOLS*NROWS] = {0};
+int blocks_destroyed = 0;
+int paddle_moves = 0;
 
 
 
@@ -193,41 +198,33 @@ draw_ball_color(black);
 
 void draw_playing_field()
 {
-    unsigned int x = VGA_WIDTH - (NCOLS*TILE_SIZE);
-    unsigned int y = 0;
-    int i;
-    int j;
-    for(i=0; i<NCOLS; i++){
-        x += TILE_SIZE;
-        for(j=0;j<NROWS; j++){
-            y += TILE_SIZE;
-            blocks[j*NCOLS + i] = (Block){0, 0, x, y, red};
-            draw_block(x, y, TILE_SIZE, TILE_SIZE, red);
+    int i, j;
+    for (i = 0; i < NCOLS; i++) {
+        for (j = 0; j < NROWS; j++) {
+            unsigned int x = VGA_WIDTH - (NCOLS - i) * TILE_SIZE; // right-most column ends at 320
+            unsigned int y = j * TILE_SIZE;
+            unsigned int color = block_colors[(i + j) % NUM_BLOCK_COLORS]; // neighbours never share a colour
+            blocks[j * NCOLS + i] = (Block){0, 0, x, y, color};
+            draw_block(x, y, TILE_SIZE, TILE_SIZE, color);
         }
-        y = 0;
     }
 }
 
 
-int check_game_state(ball_x, ball_y){
-    if (ball.pos_x - BALL_RADIUS <= 0){
-        return 0;
+int check_game_state(){
+    if (ball.pos_x - BALL_RADIUS <= 6){
+        return Lost;
     }
-    if (ball.pos_x - BALL_RADIUS >= VGA_WIDTH-TILE_SIZE - 1){
-        return 2;
+    if (ball.pos_x + BALL_RADIUS >=320){
+        return Won;
     }
-    return 1; //TODO: Implement check if game is won or lost
+    return Running; //TODO: Implement check if game is won or lost
 }
 
 void calculate_ball_pos(Ball *ball){
 
 ball -> pos_x += ball -> vel_x;
 ball -> pos_y += ball -> vel_y;
-}
-
-void update_ball_direction(Ball *ball){
-    ball -> vel_x *= -1;
-    ball -> vel_y *= -1;
 }
 
 void check_bar_collision()
@@ -237,44 +234,56 @@ int bar_right = bar.pos_x + BAR_WIDTH;
 if (ball.vel_x < 0 &&
     ball.pos_x - BALL_RADIUS <= bar_right &&
     ball.pos_x + BALL_RADIUS >= bar.pos_x &&
-    ball.pos_y >= bar.pos_y &&
-    ball.pos_y <= bar.pos_y + 15) {      
+    ball.pos_y + BALL_RADIUS >= bar.pos_y &&
+    ball.pos_y <= bar.pos_y + 14) {      
     ball.vel_x = BASE_VELOCITY / 2;
     ball.vel_y = -BASE_VELOCITY / 2;
 }
 if (ball.vel_x < 0 &&
     ball.pos_x - BALL_RADIUS <= bar_right &&
     ball.pos_x + BALL_RADIUS >= bar.pos_x &&
-    ball.pos_y >= bar.pos_y + 16 &&
-    ball.pos_y <= bar.pos_y + 30) {      
+    ball.pos_y >= bar.pos_y + 15 &&
+    ball.pos_y <= bar.pos_y + 29) {      
     ball.vel_x = BASE_VELOCITY / 2;
     ball.vel_y = 0;
 }
 if (ball.vel_x < 0 &&
     ball.pos_x - BALL_RADIUS <= bar_right &&
     ball.pos_x + BALL_RADIUS >= bar.pos_x &&
-    ball.pos_y >= bar.pos_y + 31 &&
-    ball.pos_y <= bar.pos_y + 45) {      
+    ball.pos_y  >= bar.pos_y + 30 &&
+    ball.pos_y - BALL_RADIUS <= bar.pos_y + 44) {      
         ball.vel_x = BASE_VELOCITY / 2;
         ball.vel_y = BASE_VELOCITY / 2;
     }
 }
 
+int point_in_block(int px, int py, int bx, int by)
+{
+    return px >= bx && px < bx + TILE_SIZE && py >= by && py < by + TILE_SIZE;
+}
+
 void check_block_collision()
 {
-int i;
-for (i = 0; i < NCOLS * NROWS; i++) {
-    if (blocks[i].pos_x <= ball.pos_x &&
-        blocks[i].pos_x + TILE_SIZE >= ball.pos_x &&
-        blocks[i].pos_y <= ball.pos_y &&
-        blocks[i].pos_y + TILE_SIZE >= ball.pos_y &&
-        blocks[i].destroyed == 0)
-    {
-        blocks[i].destroyed = 1;
-        draw_block(blocks[i].pos_x, blocks[i].pos_y, TILE_SIZE, TILE_SIZE, white);
-        update_ball_direction(&ball);
+    int flip_x = 0, flip_y = 0;
+    int i;
+    for (i = 0; i < NCOLS * NROWS; i++) {
+        if (blocks[i].destroyed) continue;
+        int bx = blocks[i].pos_x;
+        int by = blocks[i].pos_y;
+        int hit_side = point_in_block(ball.pos_x - BALL_RADIUS, ball.pos_y, bx, by) ||
+                       point_in_block(ball.pos_x + BALL_RADIUS, ball.pos_y, bx, by);
+        int hit_top_bottom = point_in_block(ball.pos_x, ball.pos_y - BALL_RADIUS, bx, by) ||
+                             point_in_block(ball.pos_x, ball.pos_y + BALL_RADIUS, bx, by);
+        if (hit_side || hit_top_bottom) {
+            blocks[i].destroyed = 1;
+            blocks_destroyed++;
+            draw_block(bx, by, TILE_SIZE, TILE_SIZE, white);
+            if (hit_side) flip_x = 1;
+            if (hit_top_bottom) flip_y = 1;
+        }
     }
-}
+    if (flip_x) ball.vel_x = -ball.vel_x;
+    if (flip_y) ball.vel_y = -ball.vel_y;
 }
 
 void update_game_state()
@@ -292,9 +301,6 @@ void update_game_state()
 
     calculate_ball_pos(&ball);
     check_bar_collision();
-    if (ball.pos_x + BALL_RADIUS >= width - 1) {
-        ball.vel_x = -ball.vel_x;    // right wall
-    }
     if (ball.pos_y - BALL_RADIUS <= 0 || ball.pos_y + BALL_RADIUS >= height - 1) {
         ball.vel_y = -ball.vel_y;    // top or bottom wall
     }
@@ -310,36 +316,42 @@ void update_game_state()
 
 void update_bar_state()
 {
-    int remaining = 0;
-    // TODO: Read all chars in the UART Buffer and apply the respective bar position updates
-    int user_input = ReadUart();
+    int user_input;
+    draw_bar_color(white, bar.pos_y); 
 
-    draw_bar_color(white, bar.pos_y);
-    if (!(user_input & 0x8000)){
-        return;
+    while ((user_input = ReadUart()) & 0x8000) {
+        char c = user_input & 0xFF;
+        if (c == '\n' || c == '\r') { 
+            currentState = Exit;
+            return;
+        }
+        if (c == 'w') {
+            paddle_moves++;
+            if (bar.pos_y >= 15) bar.pos_y -= 15;
+        } else if (c == 's') {
+            paddle_moves++;
+            if (bar.pos_y + BAR_HEIGHT + 15 <= VGA_HEIGHT) bar.pos_y += 15;
+        }
     }
-    
-    char c = user_input & 0xFF;
-    if (c=='s' && bar.pos_y <= VGA_HEIGHT){
-        bar.pos_y += 15; //Todo fix later
-    }
-    if(c=='w' && bar.pos_y >= 15){
-        bar.pos_y -= 15;
-    }
-    // HINT: w == 77, s == 73
-    // HINT Format: 0x00 'Remaining Chars':2 'Ready 0x80':2 'Char 0xXX':2, sample: 0x00018077 (1 remaining character, buffer is ready, current character is 'w')
-
 }
 
 void write(char *str)
 {
     // TODO: Use WriteUart to write the string to JTAG UART
-    int i;
     while (*str != '\0'){
         WriteUart(*str);
         str++;
     }
     }
+
+void write_number(int n)
+{
+    char buf[12];
+    int i = 0;
+    if (n == 0) { WriteUart('0'); return; }
+    while (n > 0) { buf[i++] = '0' + n % 10; n /= 10; }
+    while (i > 0) WriteUart(buf[--i]);
+}
 
 void play()
 {
@@ -362,10 +374,16 @@ void play()
     if (currentState == Won)
     {
         write(won);
+        write(" - Paddle moves: ");
+        write_number(paddle_moves);
+        WriteUart('\n');
     }
     else if (currentState == Lost)
     {
         write(lost);
+        write(" - Blocks destroyed: ");
+        write_number(blocks_destroyed);
+        WriteUart('\n');
     }
     else if (currentState == Exit)
     {
@@ -387,8 +405,7 @@ void reset()
         unsigned long long out = ReadUart();
         if (!(out & 0x8000))
         {
-            // not valid - abort reading
-            return;
+            break;
         }
         remaining = (out & 0xFF0000) >> 4;
     } while (remaining > 0);
@@ -399,15 +416,26 @@ void reset()
         for (col = 0; col < NCOLS; col++)
             tiles[row][col] = 0;
     // TODO: You might want to reset other state in here
+    blocks_destroyed = 0;
+    paddle_moves = 0;
 }
 
 
 void wait_for_start()
 {
-    int i = 1;
-    while(i){
-        if(ReadUart()){
-            i = 0;
+    while (1) {
+        int input = ReadUart();
+        if (!(input & 0x8000)) {
+            continue;               
+        }
+        char c = input & 0xFF;
+        if (c == '\n' || c == '\r') {
+            currentState = Exit;        
+            return;
+        }
+        if (c == 'w' || c == 's') {
+            currentState = Running;     
+            return;
         }
     }
 }
@@ -420,12 +448,15 @@ int main(int argc, char *argv[])
     while (1)
     {
         wait_for_start();
+        if(currentState == Exit){
+            break;
+        }
         play();
-        reset();
         if (currentState == Exit)
         {
             break;
         }
+        reset();
     }
     return 0;
 }
